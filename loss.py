@@ -1,24 +1,23 @@
 from dataclasses import dataclass, field
-from typing import Optional
 import torch
 import torch.nn.functional as F
 
 
 def gated_latrec_loss(
-    z_c: torch.Tensor,
-    z_hat: torch.Tensor,
+    zc: torch.Tensor,
+    zhat: torch.Tensor,
     pi: torch.Tensor,
     alpha: float = 5.0,
     beta: float = 10.0,
     tau_entropy: float = 2.0,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    error = ((z_c - z_hat) ** 2).mean(dim=-1)
-    entropy = -(pi * (pi + eps).log()).sum(dim=-1)
-    error_gate = torch.exp(-alpha * error)
-    entropy_gate = torch.sigmoid(beta * (tau_entropy - entropy))
-    weight = (error_gate * entropy_gate).detach()
-    return (weight * error).mean()
+    err = ((zc - zhat) ** 2).mean(dim=-1)
+    ent = -(pi * (pi + eps).log()).sum(dim=-1)
+    w_err = torch.exp(-alpha * err)
+    w_ent = torch.sigmoid(beta * (tau_entropy - ent))
+    w = (w_err * w_ent).detach()
+    return (w * err).mean()
 
 
 def CORAL(source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -40,86 +39,66 @@ def mmd2_rbf(
     y: torch.Tensor,
     kernel_mul: float = 1.5,
     kernel_num: int = 3,
-    fix_sigma2: Optional[float] = None,
+    fix_sigma2: float = None,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    n_x, n_y = x.size(0), y.size(0)
-    if n_x == 0 or n_y == 0:
+    n, m = x.size(0), y.size(0)
+    if n == 0 or m == 0:
         return x.new_tensor(0.0)
 
-    values = torch.cat([x, y], dim=0)
-    distance_sq = torch.cdist(values, values, p=2).pow(2)
+    z = torch.cat([x, y], dim=0)
+    dist2 = torch.cdist(z, z, p=2).pow(2)
 
-    if fix_sigma2 is None:
-        with torch.no_grad():
-            upper_mask = torch.triu(
-                torch.ones_like(distance_sq, dtype=torch.bool),
-                diagonal=1,
-            )
-            base_sigma2 = (0.5 * distance_sq[upper_mask].median()).clamp_min(eps)
-    else:
+    if fix_sigma2 is not None:
         base_sigma2 = x.new_tensor(fix_sigma2).clamp_min(eps)
+    else:
+        with torch.no_grad():
+            tri = torch.triu(torch.ones_like(dist2, dtype=torch.bool), diagonal=1)
+            med = dist2[tri].median()
+            base_sigma2 = (0.5 * med).clamp_min(eps)
 
-    kernel = torch.zeros_like(distance_sq)
-    for index in range(kernel_num):
-        sigma2 = base_sigma2 * (kernel_mul ** (index - kernel_num // 2))
-        kernel += torch.exp(-distance_sq / (2.0 * sigma2 + eps))
-    kernel /= kernel_num
+    sigma2_list = [
+        base_sigma2 * (kernel_mul ** (i - kernel_num // 2))
+        for i in range(kernel_num)
+    ]
 
-    kernel_xx = kernel[:n_x, :n_x]
-    kernel_yy = kernel[n_x:, n_x:]
-    kernel_xy = kernel[:n_x, n_x:]
+    kernel = torch.zeros_like(dist2)
+    for sigma2 in sigma2_list:
+        kernel = kernel + torch.exp(-dist2 / (2.0 * sigma2 + eps))
+    kernel = kernel / kernel_num
+
+    kernel_xx = kernel[:n, :n]
+    kernel_yy = kernel[n:, n:]
+    kernel_xy = kernel[:n, n:]
     return (kernel_xx.mean() + kernel_yy.mean() - 2.0 * kernel_xy.mean()).clamp_min(0.0)
 
 
-def cmd_loss(
-    source: torch.Tensor,
-    target: torch.Tensor,
-    n_moments: int = 3,
-) -> torch.Tensor:
-    if source.size(0) < 2 or target.size(0) < 2:
-        return source.new_tensor(0.0)
-
-    loss = torch.norm(source.mean(dim=0) - target.mean(dim=0), p=2)
-    source_centered = source - source.mean(dim=0, keepdim=True)
-    target_centered = target - target.mean(dim=0, keepdim=True)
-
-    for moment in range(2, n_moments + 1):
-        source_moment = (source_centered**moment).mean(dim=0)
-        target_moment = (target_centered**moment).mean(dim=0)
-        loss += torch.norm(source_moment - target_moment, p=2) / moment
-
-    return loss / n_moments
-
-
 def proportion_contrastive_loss(
-    z_c: torch.Tensor,
-    proportions: torch.Tensor,
+    z: torch.Tensor,
+    p: torch.Tensor,
     temperature: float = 0.2,
     pos_threshold: float = 0.9,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    batch_size = z_c.size(0)
+    batch_size = z.size(0)
     if batch_size < 2:
-        return z_c.new_tensor(0.0)
+        return z.new_tensor(0.0)
 
-    z_c = F.normalize(z_c, dim=1)
-    proportions = F.normalize(proportions, dim=1)
-    latent_similarity = z_c @ z_c.T / temperature
-    proportion_similarity = proportions @ proportions.T
+    z = F.normalize(z, dim=1)
+    p = F.normalize(p, dim=1)
+    z_sim = torch.matmul(z, z.T) / temperature
+    p_sim = torch.matmul(p, p.T)
 
-    self_mask = torch.eye(batch_size, device=z_c.device, dtype=torch.bool)
-    positive_mask = (proportion_similarity > pos_threshold) & ~self_mask
-    if positive_mask.sum() == 0:
-        return z_c.new_tensor(0.0)
+    self_mask = torch.eye(batch_size, device=z.device).bool()
+    pos_mask = (p_sim > pos_threshold) & (~self_mask)
+    if pos_mask.sum() == 0:
+        return z.new_tensor(0.0)
 
-    logits = latent_similarity.masked_fill(self_mask, -1e9)
-    log_probability = logits - torch.logsumexp(logits, dim=1, keepdim=True)
-    positive_count = positive_mask.float().sum(dim=1)
-    loss = -(log_probability * positive_mask.float()).sum(dim=1) / (
-        positive_count + eps
-    )
-    return loss[positive_count > 0].mean()
+    logits = z_sim.masked_fill(self_mask, -1e9)
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    loss = -(log_prob * pos_mask.float()).sum(dim=1) / (pos_mask.float().sum(dim=1) + eps)
+    valid = pos_mask.float().sum(dim=1) > 0
+    return loss[valid].mean()
 
 
 @dataclass
@@ -145,91 +124,6 @@ class LossWeights:
     _align_frozen: bool = field(default=False, repr=False)
 
 
-def _proportion_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    weights: LossWeights,
-) -> torch.Tensor:
-    mse = F.mse_loss(prediction, target)
-    cross_entropy = -(target * (prediction + 1e-8).log()).sum(dim=-1).mean()
-
-    with torch.no_grad():
-        mse_value = float(mse.detach().abs().item())
-        ce_value = float(cross_entropy.detach().abs().item()) + 1e-8
-        if not weights._ema_init:
-            weights._ema_mse = mse_value
-            weights._ema_ce = ce_value
-            weights._ema_init = True
-        else:
-            weights._ema_mse = (
-                weights.ema_decay * weights._ema_mse
-                + (1.0 - weights.ema_decay) * mse_value
-            )
-            weights._ema_ce = (
-                weights.ema_decay * weights._ema_ce
-                + (1.0 - weights.ema_decay) * ce_value
-            )
-        ce_weight = weights._ema_mse / (
-            weights.mse_ce_ratio * weights._ema_ce + 1e-8
-        )
-
-    return mse + ce_weight * cross_entropy
-
-
-def _alignment_weight(
-    z_real: torch.Tensor,
-    alignment_loss: torch.Tensor,
-    weights: LossWeights,
-    epoch: int,
-) -> float:
-    if not weights.align_auto:
-        return float(weights.w_align)
-
-    with torch.no_grad():
-        batch_size = z_real.size(0)
-        if batch_size >= 4:
-            permutation = torch.randperm(batch_size, device=z_real.device)
-            midpoint = batch_size // 2
-            within_loss = mmd2_rbf(
-                z_real[permutation[:midpoint]],
-                z_real[permutation[midpoint : 2 * midpoint]],
-            )
-        else:
-            within_loss = z_real.new_tensor(0.0)
-
-        between_value = float(alignment_loss.detach().abs().item())
-        within_value = float(within_loss.detach().abs().item())
-        if not weights._ema_align_init:
-            weights._ema_d_between = between_value
-            weights._ema_d_within = within_value
-            weights._ema_align_init = True
-        else:
-            weights._ema_d_between = (
-                weights.ema_decay * weights._ema_d_between
-                + (1.0 - weights.ema_decay) * between_value
-            )
-            weights._ema_d_within = (
-                weights.ema_decay * weights._ema_d_within
-                + (1.0 - weights.ema_decay) * within_value
-            )
-
-        if epoch < weights.align_probe_epochs:
-            return 0.0
-        if epoch == weights.align_probe_epochs and not weights._align_frozen:
-            weights._align_enabled = (
-                weights._ema_d_between < weights.align_open_thresh
-            )
-            weights._align_frozen = True
-            return 0.0
-        if not weights._align_frozen:
-            weights._align_enabled = (
-                weights._ema_d_between < weights.align_open_thresh
-            )
-            weights._align_frozen = True
-
-    return float(weights.w_align) if weights._align_enabled else 0.0
-
-
 def compute_losses(
     out_pseudo,
     out_real,
@@ -238,42 +132,95 @@ def compute_losses(
     p_true: torch.Tensor,
     domain_pseudo: torch.Tensor,
     domain_real: torch.Tensor,
-    weights: LossWeights,
+    w: LossWeights,
     epoch: int = 0,
 ):
     losses = {}
-    losses["L_prop"] = _proportion_loss(out_pseudo.p, p_true, weights)
+
+    eps = 1e-8
+    mse = F.mse_loss(out_pseudo.p, p_true)
+    ce = -(p_true * (out_pseudo.p + eps).log()).sum(dim=-1).mean()
+
+    with torch.no_grad():
+        m_abs = float(mse.detach().abs().item())
+        c_abs = float(ce.detach().abs().item()) + 1e-8
+        if not w._ema_init:
+            w._ema_mse, w._ema_ce, w._ema_init = m_abs, c_abs, True
+        else:
+            w._ema_mse = w.ema_decay * w._ema_mse + (1.0 - w.ema_decay) * m_abs
+            w._ema_ce = w.ema_decay * w._ema_ce + (1.0 - w.ema_decay) * c_abs
+        lam = w._ema_mse / (w.mse_ce_ratio * w._ema_ce + 1e-8)
+
+    losses["L_prop"] = mse + lam * ce
+
     losses["L_rec"] = 0.5 * (
         F.mse_loss(out_pseudo.recon_x, x_pseudo)
         + F.mse_loss(out_real.recon_x, x_real)
     )
+
     losses["L_latrec"] = 0.5 * (
         gated_latrec_loss(out_pseudo.z_c, out_pseudo.z_hat, out_pseudo.pi)
         + gated_latrec_loss(out_real.z_c, out_real.z_hat, out_real.pi)
     )
 
     domain_labels = torch.cat([domain_pseudo, domain_real], dim=0).long()
-    domain_logits = torch.cat(
-        [out_pseudo.domain_logits, out_real.domain_logits],
+    dom_logits_s = torch.cat(
+        [out_pseudo.domain_logits_s, out_real.domain_logits_s],
         dim=0,
     )
-    losses["L_domain"] = F.cross_entropy(domain_logits, domain_labels)
+    losses["L_domain"] = F.cross_entropy(dom_logits_s, domain_labels)
 
-    losses["L_align"] = mmd2_rbf(out_pseudo.z_c.detach(), out_real.z_c)
-    alignment_weight = _alignment_weight(
-        out_real.z_c.detach(),
-        losses["L_align"],
-        weights,
-        epoch,
+    d_between = mmd2_rbf(out_pseudo.z_c.detach(), out_real.z_c)
+    losses["L_align"] = d_between
+
+    with torch.no_grad():
+        zr = out_real.z_c.detach()
+        batch_size = zr.size(0)
+        if batch_size >= 4:
+            perm = torch.randperm(batch_size, device=zr.device)
+            half = batch_size // 2
+            d_within = mmd2_rbf(zr[perm[:half]], zr[perm[half:2 * half]])
+        else:
+            d_within = zr.new_tensor(0.0)
+
+        db = float(d_between.detach().abs().item())
+        dw = float(d_within.detach().abs().item())
+        if not w._ema_align_init:
+            w._ema_d_between, w._ema_d_within, w._ema_align_init = db, dw, True
+        else:
+            w._ema_d_between = w.ema_decay * w._ema_d_between + (1.0 - w.ema_decay) * db
+            w._ema_d_within = w.ema_decay * w._ema_d_within + (1.0 - w.ema_decay) * dw
+
+        if w.align_auto:
+            if epoch < w.align_probe_epochs:
+                w_eff = 0.0
+            elif epoch == w.align_probe_epochs:
+                if not w._align_frozen:
+                    w._align_enabled = w._ema_d_between < w.align_open_thresh
+                    w._align_frozen = True
+                w_eff = 0.0
+            else:
+                if not w._align_frozen:
+                    w._align_enabled = w._ema_d_between < w.align_open_thresh
+                    w._align_frozen = True
+                w_eff = float(w.w_align) if w._align_enabled else 0.0
+        else:
+            w_eff = float(w.w_align)
+
+    losses["L_contrast"] = proportion_contrastive_loss(
+        out_pseudo.z_c,
+        p_true,
+        temperature=0.2,
+        pos_threshold=0.9,
     )
-    losses["L_contrast"] = proportion_contrastive_loss(out_pseudo.z_c, p_true)
 
     losses["L_total"] = (
-        weights.w_prop * losses["L_prop"]
-        + weights.w_rec * losses["L_rec"]
-        + weights.w_latrec * losses["L_latrec"]
-        + weights.w_dom * losses["L_domain"]
-        + alignment_weight * losses["L_align"]
-        + weights.w_contrast * losses["L_contrast"]
+        w.w_prop * losses["L_prop"]
+        + w.w_rec * losses["L_rec"]
+        + w.w_latrec * losses["L_latrec"]
+        + w.w_dom * losses["L_domain"]
+        + w_eff * losses["L_align"]
+        + w.w_contrast * losses["L_contrast"]
     )
     return losses
+
