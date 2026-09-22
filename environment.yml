@@ -14,5 +14,6 @@ dependencies:
   - scikit-learn=1.4
   - h5py=3.10
   - tqdm=4.66
+  - matplotlib=3.8
   - jupyterlab=4
   - ipykernel=6

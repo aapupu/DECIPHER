@@ -15,7 +15,6 @@ class ForwardOut:
     p: torch.Tensor
     z_hat: torch.Tensor
     recon_x: torch.Tensor
-    # z_s domain-supervised head.
     domain_logits_s: torch.Tensor
 
 
@@ -94,9 +93,9 @@ class DECIPHER(nn.Module):
         )
         self.solver = MirrorDescentNNLS(steps=20, init_eta=0.5, sum_to_one=False, learn_eta=True, eps=1e-8)
 
-    def forward(self, x):
+    def forward(self, x, ct_mask=None):
         z_c, z_s, z_s_dom_for_batch = self.decoupled_encoder.forward_with_batch_s(x)
-        pi, p, z_hat = self.solve_pi(z_c)
+        pi, p, z_hat = self.solve_pi(z_c, ct_mask=ct_mask)
         recon_x = self.decoder(z_c, z_s)
         domain_logits_s = self.domain_classify_s(z_s_dom_for_batch)
         return ForwardOut(
@@ -109,16 +108,19 @@ class DECIPHER(nn.Module):
             domain_logits_s=domain_logits_s,
         )
 
-    def solve_pi(self, z_c: torch.Tensor):
+    def solve_pi(self, z_c: torch.Tensor, ct_mask=None):
         z_c = z_c / (z_c.norm(dim=-1, keepdim=True) + 1e-8)
         S_z_proj = self.proto_projector(self.S_z_raw)
         S_z_proj = S_z_proj / (S_z_proj.norm(dim=-1, keepdim=True) + 1e-8)
-        pi = self.solver(z_c, S_z_proj)
+        proto_mask = ct_mask[:, self.proto2ct] if ct_mask is not None else None
+        pi = self.solver(z_c, S_z_proj, proto_mask=proto_mask)
         z_hat = pi @ S_z_proj
         B = pi.size(0)
         C = int(self.num_celltypes)
         p = torch.zeros(B, C, device=pi.device, dtype=pi.dtype)
         p.scatter_add_(1, self.proto2ct.view(1, -1).expand(B, -1), pi)
+        if ct_mask is not None:
+            p = p * ct_mask.to(dtype=p.dtype, device=p.device)
         p = p / (p.sum(dim=-1, keepdim=True) + 1e-8)
         return pi, p, z_hat
 
@@ -156,9 +158,12 @@ class DECIPHER(nn.Module):
                 prop_pseudo = pseudo["prop_celltype"].float().to(device)
                 x_real = real["x"].float().to(device)
                 domain_real = real["domain"].long().to(device)
+                ct_mask_real = real.get("ct_mask", None)
+                if ct_mask_real is not None:
+                    ct_mask_real = ct_mask_real.float().to(device)
 
                 out_pseudo = self(x_pseudo)
-                out_real = self(x_real)
+                out_real = self(x_real, ct_mask=ct_mask_real)
                 losses = compute_losses(
                     out_pseudo,
                     out_real,
@@ -298,17 +303,17 @@ class DECIPHER(nn.Module):
         return self.decoupled_encoder(x)
 
     @torch.no_grad()
-    def deconvolution(self, x: torch.Tensor):
+    def deconvolution(self, x: torch.Tensor, ct_mask=None):
         self.eval()
         zc, _ = self.decoupled_encoder(x)
-        pi, p, _ = self.solve_pi(zc)
+        pi, p, _ = self.solve_pi(zc, ct_mask=ct_mask)
         return pi, p
 
 
 class MirrorDescentNNLS(nn.Module):
     """
     Solve:
-        min_{pi >= 0} || z - pi @ S ||^2  (+ optional normalization to sum-to-one)
+        min_{pi >= 0} || z - pi @ S ||^2 
 
     If sum_to_one=True, we renormalize pi each iteration: pi <- pi / sum(pi).
     This gives simplex-like behavior and stabilizes proportions.
@@ -328,15 +333,20 @@ class MirrorDescentNNLS(nn.Module):
         eta = torch.tensor(float(init_eta))
         self.eta = nn.Parameter(eta) if learn_eta else eta
 
-    def forward(self, z: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
+    def forward(self, z: torch.Tensor, S: torch.Tensor, proto_mask=None) -> torch.Tensor:
         """
         z: [B, dc]
         S: [M, dc]
+        proto_mask: optional [B, M] (1=allowed, 0=forced zero)
         returns pi: [B, M], non-negative; if sum_to_one -> rows sum to 1
         """
         B = z.size(0)
         M = S.size(0)
-        pi = torch.full((B, M), 1.0 / M, device=z.device, dtype=z.dtype)
+        if proto_mask is None:
+            pi = torch.full((B, M), 1.0 / M, device=z.device, dtype=z.dtype)
+        else:
+            proto_mask = proto_mask.to(dtype=z.dtype, device=z.device)
+            pi = proto_mask / (proto_mask.sum(dim=-1, keepdim=True) + self.eps)
 
         eta = self.eta.clamp(min=1e-4, max=10.0)
 
@@ -344,6 +354,8 @@ class MirrorDescentNNLS(nn.Module):
             z_hat = pi @ S                      # [B, dc]
             grad = 2.0 * (z_hat - z) @ S.t()    # [B, M]
             pi = pi * torch.exp(-eta * grad).clamp(min=self.eps)
+            if proto_mask is not None:
+                pi = pi * proto_mask
 
             if self.sum_to_one:
                 pi = pi / (pi.sum(dim=-1, keepdim=True) + self.eps)
@@ -398,9 +410,6 @@ class DecoupledEncoder(nn.Module):
         """
         Return normal latents plus a special z_s_dom branch for L_batch_s.
 
-        Batch_s path:
-            h.detach() -> z_s_dom_dense -> z_s_dom_for_batch -> domain_classifier_s
-            L_batch_s updates z_s_dom_dense and domain_classifier_s, but not common_encoder.
         """
         h = self.common_encoder(x)
         z_c, z_s, _ = self._encode_from_h(h)
