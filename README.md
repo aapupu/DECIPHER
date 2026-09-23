@@ -1,17 +1,18 @@
 # DECIPHER
 
-**DECIPHER enables modality-agnostic cellular deconvolution through
-decoupled invariant prototype learning**
+**DECIPHER integrates disentangled representation learning and
+prototype-based cell-type deconvolution across molecular modalities.**
 
 ## Overview
 
-DECIPHER is a deep learning model for **cellular deconvolution** of bulk
-or spatial mixtures. Given a single-cell reference, it learns decoupled
-latents --- a domain-constant representation (`Zc`) and a
-sample-specific representation (`Zs`) --- and estimates cell-type
-proportions via prototype-guided non-negative least squares using
-cell-type latent prototypes (`Zct`). The same framework applies across
-modalities such as RNA-seq, ATAC-seq, and spatial transcriptomics.
+DECIPHER integrates disentangled representation learning and
+prototype-based cell-type deconvolution across molecular modalities. Given a
+single-cell reference, it learns decoupled latents --- a domain-constant
+representation (`Zc`) and a sample-specific representation (`Zs`) --- and
+estimates cell-type proportions via prototype-guided non-negative least
+squares using cell-type latent prototypes (`Zct`). The same framework
+applies across modalities such as RNA-seq, ATAC-seq, and spatial
+transcriptomics.
 
 ## Model framework
 
@@ -215,8 +216,8 @@ train_ds = PseudoRealDynamicPairDataset(
 
 ## Citation
 
-DECIPHER enables modality-agnostic cellular deconvolution through
-decoupled invariant prototype learning\
+DECIPHER integrates disentangled representation learning and
+prototype-based cell-type deconvolution across molecular modalities\
 Wenpu Lai, Chenyang Li, Oscar Junhong Luo
 
 ## Contact

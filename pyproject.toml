@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "DECIPHER"
 version = "0.1.0"
-description = "DECIPHER: decoupled invariant prototype-based cellular deconvolution"
+description = "DECIPHER integrates disentangled representation learning and prototype-based cell-type deconvolution across molecular modalities"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }

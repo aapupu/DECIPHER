@@ -1,4 +1,4 @@
-"""DECIPHER: decoupled invariant prototype-based cellular deconvolution."""
+"""DECIPHER integrates disentangled representation learning and prototype-based cell-type deconvolution across molecular modalities."""
 
 from .dataprocess import (
     DecodePseudoBulkBuilder,
