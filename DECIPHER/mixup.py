@@ -14,7 +14,7 @@ from typing import Optional, Sequence
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from scripts.dataprocess import _rng
+from .dataprocess import _rng
 
 
 class PseudoRealDynamicPairDataset(Dataset):

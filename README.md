@@ -24,57 +24,62 @@ git clone https://github.com/aapupu/DECIPHER.git
 cd DECIPHER
 conda env create -f environment.yml
 conda activate decipher
+pip install -e .
 ```
 
 GPU is used automatically when CUDA is available.
 
 ## Input
 
-- **Single-cell reference** (`.h5ad` or gene × cell matrix): required
-  cell-type labels (e.g. `obs["celltype"]` / `obs["cell_line"]`).
-- **Real mixtures**: sample × gene matrix aligned to the same genes as
-  the reference after processing.
-
-
+- **Single-cell reference** (`.h5ad`): required cell-type labels
+  (e.g. `obs["celltype"]` / `obs["cell_line"]`).
+- **Real mixtures**: sample × gene matrix (or gene × sample CSV / `.h5ad`)
+  aligned to the same genes as the reference after processing.
 
 ## Usage
 
-Demo (already executed; open to inspect metrics and figures):
-
-- [`citeseq.ipynb`](citeseq.ipynb) --- CITE-seq RNA cross-donor deconvolution
-
-Minimal API (run from the repository root):
+### 1. Python API
 
 ```python
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(".").resolve()))
+from DECIPHER import (
+    DECIPHER,
+    DecodePseudoBulkBuilder,
+    DecodePseudoBulkConfig,
+    LossWeights,
+    PseudoRealDynamicPairDataset,
+    pair_collate,
+    process_adata,
+    reorder_celltype_proportions,
+    row_max_normalize,
+    seed_everything,
+)
+```
 
+Minimal training example:
+
+```python
 import numpy as np
 import scanpy as sc
 import torch
 from sklearn.decomposition import PCA
 from torch.utils.data import DataLoader
 
-from scripts.dataprocess import (
-    DecodePseudoBulkBuilder, DecodePseudoBulkConfig,
-    process_adata, reorder_celltype_proportions, row_max_normalize,
+from DECIPHER import (
+    DECIPHER, DecodePseudoBulkBuilder, DecodePseudoBulkConfig, LossWeights,
+    PseudoRealDynamicPairDataset, pair_collate, process_adata,
+    reorder_celltype_proportions, row_max_normalize, seed_everything,
 )
-from scripts.dataset import PseudoRealDynamicPairDataset, pair_collate
-from scripts.loss import LossWeights
-from scripts.model import DECIPHER
-from scripts.utils import seed_everything
 
 seed_everything(42)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-adata = sc.read_h5ad("data/real/adata.h5ad")
-celltype_order = list(dict.fromkeys(adata.obs["cell_line"].astype(str)))
-sc_data = process_adata(adata, celltype_key="cell_line", state_key=None)
+adata = sc.read_h5ad("sc_reference.h5ad")
+celltype_order = list(dict.fromkeys(adata.obs["celltype"].astype(str)))
+sc_data = process_adata(adata, celltype_key="celltype", state_key=None)
 
 X = np.asarray(sc_data.X, dtype=np.float32)
 Z = PCA(n_components=16, random_state=42).fit_transform(X)
-labels = adata.obs["cell_line"].astype(str).to_numpy()
+labels = adata.obs["celltype"].astype(str).to_numpy()
 s_z = torch.from_numpy(
     np.stack([Z[labels == ct].mean(0) for ct in celltype_order]).astype(np.float32)
 )
@@ -115,6 +120,26 @@ model.fit(
 _, proportions = model.deconvolution(torch.from_numpy(real_x).to(device))
 ```
 
+Demo notebook: [`citeseq.ipynb`](citeseq.ipynb).
+
+### 2. Command line
+
+After `pip install -e .`:
+
+```bash
+DECIPHER \
+  --sc_path sc_reference.h5ad \
+  --bulk_path bulk_matrix.csv \
+  --celltype_key celltype \
+  --outdir DECIPHER_out \
+  --n_pseudo 4000 \
+  --max_epoch 300 \
+  --real_mixup_prob 0.2 \
+  --verbose
+```
+
+Writes `DECIPHER_out/DECIPHER.pt` and `DECIPHER_out/pred_proportions.csv`.
+
 ### Core functions
 
 #### `process_adata`
@@ -123,21 +148,12 @@ _, proportions = model.deconvolution(torch.from_numpy(real_x).to(device))
 process_adata(adata, celltype_key="celltype", state_key=None)
 ```
 
-- `adata` --- AnnData single-cell object
-- `celltype_key` --- column in `obs` with cell-type labels
-
 #### `DECIPHER`
 
 ```python
 DECIPHER(s_z, n_feature=2000, hidden_dim=(128, 128), n_domain=2,
          drop_prob=0.1, align_dim=32)
 ```
-
-- `s_z` --- prototype matrix `(n_celltypes, d)`
-- `n_feature` --- gene / feature dimension of mixtures
-- `hidden_dim` --- encoder MLP widths
-- `n_domain` --- number of domain labels (pseudo + real)
-- `align_dim` --- shared latent width for alignment / contrast
 
 #### `model.fit` / `model.deconvolution`
 
@@ -180,16 +196,14 @@ z_c, z_s = model.encode_z(x)
 
 ## Mixup
 
-[`mixup.py`](mixup.py) provides `PseudoRealDynamicPairDataset` with
-**real-mixture mixup** used to reproduce Fig. 3 results.
-
-During training, with probability `real_mixup_prob`, the loader samples
-`k` real mixtures and combines them with Dirichlet(`alpha`) weights
-(default `p=0.2`, `k=4`, `α=0.5`). Validation should use
-`real_sampling="fixed_cycle"` and `real_mixup_prob=0`.
+`DECIPHER.mixup` (also exported as `PseudoRealDynamicPairDataset`) supports
+**real-mixture mixup**. During training, with probability `real_mixup_prob`,
+the loader samples `k` real mixtures and combines them with
+Dirichlet(`alpha`) weights (default `p=0.2`, `k=4`, `α=0.5`). Validation
+should use `real_sampling="fixed_cycle"` and `real_mixup_prob=0`.
 
 ```python
-from mixup import PseudoRealDynamicPairDataset, pair_collate
+from DECIPHER import PseudoRealDynamicPairDataset, pair_collate
 
 train_ds = PseudoRealDynamicPairDataset(
     X_pseudo, props_pseudo, bulk_X, domain_id, seed=41,

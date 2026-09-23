@@ -1,4 +1,4 @@
-"""DECIPHER model package (scripts)."""
+"""DECIPHER: decoupled invariant prototype-based cellular deconvolution."""
 
 from .dataprocess import (
     DecodePseudoBulkBuilder,
@@ -7,12 +7,9 @@ from .dataprocess import (
     reorder_celltype_proportions,
     row_max_normalize,
 )
-from .dataset import (
-    PseudoRealDynamicPairDataset,
-    PseudoRealPairDataset,
-    pair_collate,
-)
+from .dataset import PseudoRealPairDataset
 from .loss import LossWeights
+from .mixup import PseudoRealDynamicPairDataset, pair_collate
 from .model import DECIPHER
 from .utils import ccc, seed_everything
 

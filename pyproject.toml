@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "DECIPHER"
+version = "0.1.0"
+description = "DECIPHER: decoupled invariant prototype-based cellular deconvolution"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name = "Wenpu Lai" },
+  { name = "Chenyang Li" },
+]
+dependencies = [
+  "numpy",
+  "scipy",
+  "pandas",
+  "torch",
+  "scanpy",
+  "scikit-learn",
+  "anndata",
+  "h5py",
+  "tqdm",
+]
+
+[project.scripts]
+DECIPHER = "DECIPHER.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["DECIPHER*"]
