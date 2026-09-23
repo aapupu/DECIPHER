@@ -139,7 +139,8 @@ DECIPHER \
   --verbose
 ```
 
-Writes `DECIPHER_out/DECIPHER.pt` and `DECIPHER_out/pred_proportions.csv`.
+Writes `DECIPHER_out/DECIPHER.pt`, `DECIPHER_out/pred_proportions.csv`,
+and `DECIPHER_out/Zc.csv` (domain-constant latents).
 
 ### Core functions
 
@@ -162,7 +163,7 @@ DECIPHER(s_z, n_feature=2000, hidden_dim=(128, 128), n_domain=2,
 model.fit(train_loader, val_dataloader=None, lr=1e-4, weight_decay=1e-3,
           max_epoch=500, device="cuda", patience=10, loss_weight=LossWeights(),
           outdir="DECIPHER.pt", verbose=False)
-pi, proportions = model.deconvolution(x)   # optional ct_mask=...
+W, proportions = model.deconvolution(x)   # optional ct_mask=...
 z_c, z_s = model.encode_z(x)
 ```
 
@@ -182,7 +183,7 @@ z_c, z_s = model.encode_z(x)
 | --- | --- | --- |
 | `w_prop` | `100` | Proportion supervision on pseudo |
 | `w_rec` | `0.1` | Expression reconstruction |
-| `w_latrec` | `0.1` | Latent reconstruction (`Zc` ↔ `π Zct`) |
+| `w_latrec` | `0.1` | Latent reconstruction (`Zc` ↔ `W Zct`) |
 | `w_dom` | `0.2` | Domain classification on `Zs` |
 | `w_align` | `0.3` | Domain alignment |
 | `w_contrast` | `0.1` | Contrastive term |
@@ -191,9 +192,10 @@ z_c, z_s = model.encode_z(x)
 ## Output
 
 - Training checkpoint: `DECIPHER.pt` (best validation loss)
-- `deconvolution(x)` → `(pi, proportions)` --- prototype weights and
+- `deconvolution(x)` → `(W, proportions)` --- prototype weights `W` and
   cell-type fractions
 - `encode_z(x)` → `(z_c, z_s)` --- decoupled latents
+- CLI also writes `Zc.csv` alongside `pred_proportions.csv`
 
 ## Mixup
 

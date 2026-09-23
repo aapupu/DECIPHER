@@ -184,7 +184,9 @@ def main(argv: list[str] | None = None) -> None:
         verbose=args.verbose,
     )
 
-    _, proportions = model.deconvolution(torch.from_numpy(bulk_X).to(device))
+    x_bulk = torch.from_numpy(bulk_X).to(device)
+    _, proportions = model.deconvolution(x_bulk)
+    z_c, _ = model.encode_z(x_bulk)
     pred_df = pd.DataFrame(
         proportions.detach().cpu().numpy(),
         index=sample_ids,
@@ -192,8 +194,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     pred_path = outdir / "pred_proportions.csv"
     pred_df.to_csv(pred_path)
+    zc_df = pd.DataFrame(
+        z_c.detach().cpu().numpy(),
+        index=sample_ids,
+        columns=[f"zc_{i}" for i in range(z_c.shape[1])],
+    )
+    zc_path = outdir / "Zc.csv"
+    zc_df.to_csv(zc_path)
     print(f"saved checkpoint: {ckpt}")
     print(f"saved predictions: {pred_path}")
+    print(f"saved Zc: {zc_path}")
 
 
 if __name__ == "__main__":
